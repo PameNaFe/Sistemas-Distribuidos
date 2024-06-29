@@ -2,11 +2,16 @@ import tkinter as tk
 import threading
 import socket
 import time as timesl
-import pickle
 import Pyro4
 import sys
 sys.path.append(".")
 
+#Si se tiene TODO el archivo
+    #Servidor - Seeder
+#Si NO tiene TODO el archivo
+    #Servidor - Leecher
+#Si NO tiene el archivo
+    #Cliente
 
 class Server(tk.Frame):
     tracker = Pyro4.Proxy("PYRO:tracker@localhost:55300")
@@ -22,6 +27,8 @@ class Server(tk.Frame):
         self.t3.start()
         timesl.sleep(1)
 
+    #mi_socket = socket.socket()
+
 
     #ejecuta hilo
     def notifyTracker(self):
@@ -35,5 +42,12 @@ class Server(tk.Frame):
                     self.tracker.putResource(self.host_name, self.avaliable_resources[resource_count-1])
                     resource_count += 1
                     timesl.sleep(0.5)
+    print(notifyTracker)
+    #Seeder
+   # def serverSeeder(self):
+    #    if self.tracker.is_alive():
+
+    #Leecher
+    #def serverLeecher(self):
     
 server = Server()
