@@ -1,51 +1,86 @@
 import socket
 import threading
 import os
+import sys
+import json  # Usar JSON para la serialización de datos
 
 class Peer:
-    def __init__(self, id, host='127.0.0.1', port=5001, tracker_host='192.168.0.19', tracker_port=5000):
+    def __init__(self, id, host='127.0.0.1', port=5001, tracker_host='192.168.1.74', tracker_port=5000): 
         self.id = id
         self.host = host
         self.port = port + id
         self.tracker_host = tracker_host
         self.tracker_port = tracker_port
         self.files = {}  # {filename: [is_complete, progress]}
-        self.peers = []
+        self.peers = {}
         self.is_seeder = False
 
     def connect_to_tracker(self):
         tracker = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         tracker.connect((self.tracker_host, self.tracker_port))
-        tracker.send(b"LIST")
+        tracker.send(json.dumps({"action": "list"}).encode())
         files = tracker.recv(1024).decode()
-        self.peers = eval(files)
+        
+        if files:  # Verificar si se recibió alguna respuesta
+            try:
+                self.peers = json.loads(files)
+            except json.JSONDecodeError as e:
+                print(f"Error decoding JSON from tracker: {e}")
+                self.peers = {}
+        else:
+            print("No response from tracker")
+            self.peers = {}
+
         tracker.close()
-        print(f"Peer {self.id} connected to tracker, peers: {self.peers}")
 
     def register_file_with_tracker(self, filename, progress):
         tracker = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         tracker.connect((self.tracker_host, self.tracker_port))
-        
-        # Informar al tracker sobre el archivo compartido
-        message = f"SHARE {filename} {self.host} {self.port} {progress}"
-        tracker.send(message.encode())
-        
-        # Actualizar lista de peers desde el tracker
+        message = {
+            "action": "share",
+            "filename": filename,
+            "host": self.host,
+            "port": self.port,
+            "progress": progress
+        }
+        tracker.send(json.dumps(message).encode())
         peers = tracker.recv(1024).decode()
-        self.peers = eval(peers)
+        
+        if peers:
+            try:
+                self.peers = json.loads(peers)
+            except json.JSONDecodeError as e:
+                print(f"Error decoding JSON from tracker: {e}")
+                self.peers = {}
+        else:
+            print("No response from tracker")
+            self.peers = {}
+
         tracker.close()
 
     def register_download_with_tracker(self, filename, progress):
         tracker = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         tracker.connect((self.tracker_host, self.tracker_port))
-        
-        # Informar al tracker sobre el progreso de la descarga
-        message = f"DOWNLOAD {filename} {self.host} {self.port} {progress}"
-        tracker.send(message.encode())
-        
-        # Actualizar lista de peers desde el tracker
+        message = {
+            "action": "download",
+            "filename": filename,
+            "host": self.host,
+            "port": self.port,
+            "progress": progress
+        }
+        tracker.send(json.dumps(message).encode())
         peers = tracker.recv(1024).decode()
-        self.peers = eval(peers)
+        
+        if peers:
+            try:
+                self.peers = json.loads(peers)
+            except json.JSONDecodeError as e:
+                print(f"Error decoding JSON from tracker: {e}")
+                self.peers = {}
+        else:
+            print("No response from tracker")
+            self.peers = {}
+
         tracker.close()
 
     def start(self):
@@ -75,7 +110,9 @@ class Peer:
             print("2. Compartir archivo ('share [nombre_archivo]')")
             print("3. Descargar archivo ('download [nombre_archivo]')")
             print("4. Cancelar acción ('cancel [nombre_archivo]')")
+            print("5. Salir")
             command = input("Selecciona una opción: ")
+            
             if command == '1':
                 self.list_files()
             elif command.startswith('share '):
@@ -88,12 +125,16 @@ class Peer:
             elif command.startswith('cancel '):
                 filename = command.split(' ')[1]
                 self.cancel_action(filename)
+            elif command == '5':
+                print(f"Peer {self.id} desconectado. ¡Hasta luego!")
+                sys.exit()  # Sale del programa
             else:
                 print("Comando inválido.")
 
     def list_files(self):
         self.connect_to_tracker()
-        print("Archivos en el tracker:", self.peers)
+        files_list = "\n".join(self.peers)  # Agrega un salto de línea entre cada archivo
+        print("Archivos en el tracker:\n", files_list)
 
     def share_file(self, filename):
         if os.path.exists(filename):
@@ -103,11 +144,17 @@ class Peer:
             
             # Registrar archivo con el tracker
             self.register_file_with_tracker(filename, 100)
+            print(f"Archivo compartido con éxito.")
         else:
             print(f"El archivo {filename} no existe.")
 
     def download_file(self, filename):
-        for peer_host, peer_port, is_complete, progress in self.peers.get(filename, []):
+        if filename not in self.peers:
+            print(f"El archivo {filename} no está disponible en el tracker")
+            return
+
+        for peer_info in self.peers[filename]:
+            peer_host, peer_port, is_complete, progress = peer_info
             if peer_host == self.host and peer_port == self.port:
                 continue
             try:
