@@ -2,11 +2,8 @@ import socket
 import threading
 
 class Tracker:
-<<<<<<< HEAD
-    def __init__(self, host='192.168.0.19', port=5000):
-=======
-    def __init__(self, host='192.168.1.74', port=5000): # La dirección IP debe ser la qut tenga la PC/Laptop
->>>>>>> 38d1acc0625ea90ed46911c1f4919faf5410f5fa
+    def __init__(self, host='192.168.0.19', port=5000): # La dirección IP debe ser la qut tenga la PC/Laptop
+
         self.host = host
         self.port = port
         self.files = {}  # {filename: [(peer_host, peer_port, is_complete, progress), ...]}
