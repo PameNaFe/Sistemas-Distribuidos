@@ -2,7 +2,7 @@ import socket
 import threading
 
 class Tracker:
-    def __init__(self, host='127.0.0.1', port=5000):
+    def __init__(self, host='192.168.0.19', port=5000):
         self.host = host
         self.port = port
         self.files = {}  # {filename: [(peer_host, peer_port, is_complete, progress), ...]}

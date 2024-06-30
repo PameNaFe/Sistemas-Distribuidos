@@ -3,7 +3,7 @@ import threading
 import os
 
 class Peer:
-    def __init__(self, id, host='127.0.0.1', port=5001, tracker_host='127.0.0.1', tracker_port=5000):
+    def __init__(self, id, host='127.0.0.1', port=5001, tracker_host='192.168.0.19', tracker_port=5000):
         self.id = id
         self.host = host
         self.port = port + id
