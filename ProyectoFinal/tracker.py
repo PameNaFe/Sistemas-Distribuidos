@@ -1,9 +1,9 @@
 import socket
 import threading
+import json
 
 class Tracker:
-    def __init__(self, host='192.168.0.19', port=5000): # La dirección IP debe ser la qut tenga la PC/Laptop
-
+    def __init__(self, host='192.168.1.74', port=5000):
         self.host = host
         self.port = port
         self.files = {}  # {filename: [(peer_host, peer_port, is_complete, progress), ...]}
@@ -37,13 +37,21 @@ class Tracker:
             client.close()
             return
         
-        if message.startswith("share"):
-            parts = message.split()
-            filename = parts[1]
-            peer_host = parts[2]
-            peer_port = int(parts[3])
-            progress = int(parts[4])  # progreso de la compartición
-            
+        try:
+            request = json.loads(message)
+        except json.JSONDecodeError as e:
+            print(f"Error decoding JSON message from {address} - {e}")
+            client.close()
+            return
+        
+        action = request.get("action")
+
+        if action == "share":
+            filename = request.get("filename")
+            peer_host = request.get("host")
+            peer_port = request.get("port")
+            progress = request.get("progress")
+
             if filename in self.files:
                 self.files[filename].append((peer_host, peer_port, True, progress))
             else:
@@ -53,15 +61,13 @@ class Tracker:
                 self.peer_files[(peer_host, peer_port)] = {}
             self.peer_files[(peer_host, peer_port)][filename] = progress
             
-            # Informar a los peers sobre la actualización
-            client.send(str(self.files[filename]).encode())
+            client.send(json.dumps(self.files[filename]).encode())
 
-        elif message.startswith("download"):
-            parts = message.split()
-            filename = parts[1]
-            peer_host = parts[2]
-            peer_port = int(parts[3])
-            progress = int(parts[4])  # progreso de la descarga
+        elif action == "download":
+            filename = request.get("filename")
+            peer_host = request.get("host")
+            peer_port = request.get("port")
+            progress = request.get("progress")
 
             if filename in self.files:
                 self.files[filename].append((peer_host, peer_port, False, progress))
@@ -72,10 +78,12 @@ class Tracker:
                 self.peer_files[(peer_host, peer_port)] = {}
             self.peer_files[(peer_host, peer_port)][filename] = progress
 
-            client.send(str(self.files[filename]).encode())
+            client.send(json.dumps(self.files[filename]).encode())
 
-        elif message.startswith("list"):
-            client.send(str(self.files).encode())
+        elif action == "list":
+            client.send(json.dumps(self.files).encode())
+        else:
+            client.send(json.dumps({}).encode())  # Responder con un JSON vacío si la acción no es válida
 
         client.close()
 
