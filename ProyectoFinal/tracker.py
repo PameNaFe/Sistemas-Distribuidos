@@ -11,13 +11,13 @@ class Tracker:
         self.server.bind((self.host, self.port))
         self.server.listen(5)
         print(f"Tracker escuchando en {self.host}:{self.port}")
-        threading.Thread(target=self.accept_connections).start()
+        threading.Thread(target=self.accept_connections, daemon=True).start()
 
     def accept_connections(self):
         while True:
             client_socket, client_address = self.server.accept()
             print(f"Conexión aceptada de {client_address}")
-            threading.Thread(target=self.handle_peer, args=(client_socket,)).start()
+            threading.Thread(target=self.handle_peer, args=(client_socket,), daemon=True).start()
 
     def handle_peer(self, client_socket):
         try:
@@ -25,32 +25,31 @@ class Tracker:
                 data = client_socket.recv(1024)
                 if data:
                     request = pickle.loads(data)
-                    if request['action'] == 'register':
-                        self.peers[request['peer_id']] = {'shared_files': [], 'downloaded_files': [], 'progress': 0}
-                        print(f"Peer registrado: {request['peer_id']}")
-                    elif request['action'] == 'share':
-                        self.peers[request['peer_id']]['shared_files'].append(request['file_name'])
-                        print(f"Archivo compartido por {request['peer_id']}: {request['file_name']}")
-                    elif request['action'] == 'progress_update':
-                        self.peers[request['peer_id']]['progress'] = request['progress']
-                    elif request['action'] == 'download':
-                        self.peers[request['peer_id']]['downloaded_files'].append(request['file_name'])
-                        threading.Thread(target=self.simulate_download, args=(request['peer_id'],)).start()
-                        print(f"Descargando archivo para {request['peer_id']}: {request['file_name']}")
-                    elif request['action'] == 'list_files':
+                    action = request.get('action')
+                    peer_id = request.get('peer_id')
+
+                    if action == 'register':
+                        self.peers[peer_id] = {'shared_files': [], 'downloaded_files': [], 'progress': 0}
+                        print(f"Peer registrado: {peer_id}")
+                    elif action == 'share':
+                        self.peers[peer_id]['shared_files'].append(request['file_name'])
+                        print(f"Archivo compartido por {peer_id}: {request['file_name']}")
+                    elif action == 'progress_update':
+                        self.peers[peer_id]['progress'] = request['progress']
+                    elif action == 'download':
+                        self.peers[peer_id]['downloaded_files'].append(request['file_name'])
+                        print(f"Descargando archivo para {peer_id}: {request['file_name']}")
+                    elif action == 'list_files':
                         all_shared_files = self.get_all_shared_files()
                         client_socket.send(pickle.dumps(all_shared_files))
+
                     self.save_data()
                 else:
                     break
+        except Exception as e:
+            print(f"Error manejando el peer: {e}")
         finally:
             client_socket.close()
-
-    def simulate_download(self, peer_id):
-        for progress in range(0, 101, 10):
-            self.peers[peer_id]['progress'] = progress
-            self.save_data()
-            threading.Event().wait(1)  # Simulación de tiempo de descarga
 
     def get_all_shared_files(self):
         all_files = []
