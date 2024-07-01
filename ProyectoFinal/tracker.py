@@ -1,110 +1,159 @@
+# tracker
 import socket
-import pickle
 import threading
+import json
 
 class Tracker:
-    def __init__(self, host='127.0.0.1', port=5000):
-        self.peers = {}
+    def __init__(self, host='192.168.1.74', port=5000):
         self.host = host
         self.port = port
-        self.server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.server.bind((self.host, self.port))
-        self.server.listen(5)
-        print(f"Tracker escuchando en {self.host}:{self.port}")
-        threading.Thread(target=self.accept_connections, daemon=True).start()
+        self.files = {}  # {filename: [(peer_host, peer_port, is_complete, progress), ...]}
+        self.peer_files = {}  # {(peer_host, peer_port): {filename: progress}}
+        self.connected_peers = []  # List to keep track of connected peers
 
-    def accept_connections(self):
-        while True:
-            client_socket, client_address = self.server.accept()
-            print(f"Conexión aceptada de {client_address}")
-            threading.Thread(target=self.handle_peer, args=(client_socket,), daemon=True).start()
+    def start(self):
+        threading.Thread(target=self.server).start()
+        self.console_menu()
 
-    def handle_peer(self, client_socket):
+    def server(self):
+        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
-            while True:
-                data = client_socket.recv(1024)
-                if data:
-                    request = pickle.loads(data)
-                    action = request.get('action')
-                    peer_id = request.get('peer_id')
+            server.bind((self.host, self.port))
+        except socket.error as e:
+            print(f"Error binding to {self.host}:{self.port} - {e}")
+            return
 
-                    if action == 'register':
-                        self.peers[peer_id] = {'shared_files': [], 'downloaded_files': [], 'progress': 0}
-                        print(f"Peer registrado: {peer_id}")
-                    elif action == 'share':
-                        self.peers[peer_id]['shared_files'].append(request['file_name'])
-                        print(f"Archivo compartido por {peer_id}: {request['file_name']}")
-                    elif action == 'progress_update':
-                        self.peers[peer_id]['progress'] = request['progress']
-                    elif action == 'download':
-                        self.peers[peer_id]['downloaded_files'].append(request['file_name'])
-                        print(f"Descargando archivo para {peer_id}: {request['file_name']}")
-                    elif action == 'list_files':
-                        all_shared_files = self.get_all_shared_files()
-                        client_socket.send(pickle.dumps(all_shared_files))
+        server.listen(5)
+        print(f"Tracker escuchando en {self.host}:{self.port}")
 
-                    self.save_data()
-                else:
-                    break
-        except Exception as e:
-            print(f"Error manejando el peer: {e}")
-        finally:
-            client_socket.close()
-
-    def get_all_shared_files(self):
-        all_files = []
-        for peer_id, info in self.peers.items():
-            all_files.extend(info['shared_files'])
-        return all_files
-
-    def save_data(self):
-        with open('tracker_data.pkl', 'wb') as f:
-            pickle.dump(self.peers, f)
-
-    def menu(self):
         while True:
-            print("\n--- Menú del Tracker ---")
-            print("1. Visualizar todos los peers conectados")
-            print("2. Ver la cantidad de archivos descargados y compartidos")
-            print("3. Visualizar el progreso de las descargas o subidas de archivos por cada peer")
-            print("4. Obtener listado de los archivos compartidos por los peers")
-            print("5. Salir del tracker")
-            choice = input("Elige una opción: ")
+            try:
+                client, address = server.accept()
+                self.connected_peers.append((client, address))
+                threading.Thread(target=self.handle_client, args=(client, address)).start()
+            except Exception as e:
+                print(f"Error accepting connection - {e}")
 
-            if choice == '1':
-                self.display_peers()
-            elif choice == '2':
-                self.display_files_stats()
-            elif choice == '3':
-                self.display_progress()
-            elif choice == '4':
-                self.list_shared_files()
-            elif choice == '5':
-                self.server.close()
+    def handle_client(self, client, address):
+        peer_id = address[1] - 5001  # Calcula el ID del peer según su puerto
+        try:
+            message = client.recv(12_500_000).decode()
+        except Exception as e:
+            print(f"Error receiving message from {address} - {e}")
+            client.close()
+            return
+
+        try:
+            request = json.loads(message)
+        except json.JSONDecodeError as e:
+            print(f"Error decoding JSON message from {address} - {e}")
+            client.close()
+            return
+
+        action = request.get("action")
+        filename = request.get("filename")
+        peer_host = request.get("host")
+        peer_port = request.get("port")
+        progress = request.get("progress", 0)
+
+        if action == "share":
+            if filename in self.files:
+                self.files[filename].append((peer_host, peer_port, True, progress))
+            else:
+                self.files[filename] = [(peer_host, peer_port, True, progress)]
+
+            if (peer_host, peer_port) not in self.peer_files:
+                self.peer_files[(peer_host, peer_port)] = {}
+            self.peer_files[(peer_host, peer_port)][filename] = progress
+
+            client.send(json.dumps(self.files[filename]).encode())
+
+        elif action == "download":
+            if filename in self.files:
+                for i, (host, port, is_complete, prog) in enumerate(self.files[filename]):
+                    if host == peer_host and port == peer_port:
+                        self.files[filename][i] = (peer_host, peer_port, False, progress)
+                        break
+                else:
+                    self.files[filename].append((peer_host, peer_port, False, progress))
+            else:
+                self.files[filename] = [(peer_host, peer_port, False, progress)]
+
+            if (peer_host, peer_port) not in self.peer_files:
+                self.peer_files[(peer_host, peer_port)] = {}
+            self.peer_files[(peer_host, peer_port)][filename] = progress
+
+            client.send(json.dumps(self.files[filename]).encode())
+
+        elif action == "progress":
+            if filename in self.files:
+                for i, (host, port, is_complete, prog) in enumerate(self.files[filename]):
+                    if host == peer_host and port == peer_port:
+                        self.files[filename][i] = (peer_host, peer_port, is_complete, progress)
+                        break
+            if (peer_host, peer_port) in self.peer_files:
+                self.peer_files[(peer_host, peer_port)][filename] = progress
+
+            # Mostrar el progreso
+            print(f"Progreso de {filename} desde {peer_host}:{peer_port}: {progress}%")
+
+        elif action == "list":
+            client.send(json.dumps(self.files).encode())
+        else:
+            client.send(json.dumps({}).encode())  # Responder con un JSON vacío si la acción no es válida
+
+        client.close()
+
+    def show_peer_status(self):
+        print("Estado de cada Peer conectado:")
+        for client, address in self.connected_peers:
+            peer_id = address[1] - 5001
+            print(f"Peer {peer_id} connected: {address}")
+       
+
+    def debug_info(self):
+        print("Información de archivos:")
+        print("Archivos compartidos:")
+        for filename, peers in self.files.items():
+            print(f"  {filename}:")
+            for peer_info in peers:
+                print(f"    Peer {peer_info[0]}:{peer_info[1]} - Completo: {peer_info[2]}, Progreso: {peer_info[3]}%")
+
+        print("Archivos por Peer:")
+        for peer, files in self.peer_files.items():
+            print(f"  Peer {peer[0]}:{peer[1]}:")
+            for filename, progress in files.items():
+                print(f"    {filename} - Progreso: {progress}%")
+
+    def download_progress(self):
+         for peer, files in self.peer_files.items():
+            print(f"  Peer {peer[0]}:{peer[1]}:")
+            for filename, progress in files.items():
+                is_complete = any(f[2] for f in self.files.get(filename, []) if f[0] == peer[0] and f[1] == peer[1])
+                status = "Completo" if is_complete else f"Progreso: {progress}%"
+                print(f"    {filename} - {status}")
+
+    def console_menu(self):
+        while True:
+            print("\nMenú del Tracker:")
+            print("1. Ver estado de cada peer conectado")
+            print("2. Archivos")
+            print("3. Progreso de descargas")
+            print("4. Salir")
+            option = input("Seleccione una opción: ")
+
+            if option == '1':
+                self.show_peer_status()
+            elif option == '2':
+                self.debug_info()
+            elif option == '3':
+                self.download_progress()
+            elif option == '4':
+                print("Tracker desconectado. ¡Hasta luego!")
                 break
             else:
-                print("Opción inválida. Intenta de nuevo.")
-
-    def display_peers(self):
-        print("Peers conectados:")
-        for peer_id, info in self.peers.items():
-            print(f"ID: {peer_id}, Archivos Compartidos: {len(info['shared_files'])}, Archivos Descargados: {len(info['downloaded_files'])}")
-
-    def display_files_stats(self):
-        print("Archivos compartidos y descargados:")
-        for peer_id, info in self.peers.items():
-            print(f"ID: {peer_id}, Compartidos: {len(info['shared_files'])}, Descargados: {len(info['downloaded_files'])}")
-
-    def display_progress(self):
-        print("Progreso de las descargas/subidas:")
-        for peer_id, info in self.peers.items():
-            print(f"ID: {peer_id}, Progreso: {info['progress']}%")
-
-    def list_shared_files(self):
-        print("Archivos compartidos por los peers:")
-        for peer_id, info in self.peers.items():
-            print(f"ID: {peer_id}, Archivos: {info['shared_files']}")
+                print("Opción inválida. Intente de nuevo.")
 
 if __name__ == "__main__":
     tracker = Tracker()
-    tracker.menu()
+    tracker.start()
