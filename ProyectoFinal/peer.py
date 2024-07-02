@@ -1,9 +1,8 @@
-# peer
-import socket
-import threading
 import os
+import json
+import threading
+import socket
 import sys
-import json  # Usar JSON para la serialización de datos
 
 class Peer:
     def __init__(self, id, host='192.168.1.74', port=5001, tracker_host='192.168.1.74', tracker_port=5000):
@@ -12,9 +11,19 @@ class Peer:
         self.port = port + id
         self.tracker_host = tracker_host
         self.tracker_port = tracker_port
-        self.files = {}  # {filename: [is_complete, progress]}
+        self.files = self.load_progress()
         self.peers = {}
         self.is_seeder = False
+
+    def load_progress(self):
+        if os.path.exists(f'peer_{self.id}_progress.json'):
+            with open(f'peer_{self.id}_progress.json', 'r') as f:
+                return json.load(f)
+        return {}
+
+    def save_progress(self):
+        with open(f'peer_{self.id}_progress.json', 'w') as f:
+            json.dump(self.files, f)
 
     def connect_to_tracker(self):
         tracker = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -22,7 +31,7 @@ class Peer:
         tracker.send(json.dumps({"action": "list"}).encode())
         files = tracker.recv(12_500_000).decode()
 
-        if files:  # Verificar si se recibió alguna respuesta
+        if files:
             try:
                 self.peers = json.loads(files)
             except json.JSONDecodeError as e:
@@ -45,8 +54,6 @@ class Peer:
             "progress": progress
         }
         tracker.send(json.dumps(message).encode())
-        # 100 Megabits son 12.5 Megabytes
-        # Recibir hasta 12,500,000 bytes (12.5 MB) desde el tracker
         peers = tracker.recv(12_500_000).decode()
 
         if peers:
@@ -98,6 +105,7 @@ class Peer:
         }
         tracker.send(json.dumps(message).encode())
         tracker.close()
+        self.save_progress()
 
     def start(self):
         threading.Thread(target=self.server).start()
@@ -113,7 +121,14 @@ class Peer:
         while True:
             client, address = server.accept()
             filename = client.recv(1024).decode()
-            if filename in self.files and self.files[filename][0]:
+            if filename.startswith("SIZE "):
+                filename = filename.split()[1]
+                if os.path.exists(filename):
+                    file_size = os.path.getsize(filename)
+                    client.send(f"SIZE {file_size}".encode())
+                else:
+                    client.send(b"ERROR")
+            elif filename in self.files and self.files[filename][0]:
                 client.send(b'ACK')
                 with open(filename, 'rb') as f:
                     client.sendfile(f)
@@ -149,7 +164,7 @@ class Peer:
 
     def list_files(self):
         self.connect_to_tracker()
-        files_list = "\n".join(self.peers)  # Agrega un salto de línea entre cada archivo
+        files_list = "\n".join(self.peers)
         print("\nArchivos en el tracker:\n", files_list)
 
     def share_file(self, filename):
@@ -169,6 +184,28 @@ class Peer:
             print(f"El archivo {filename} no está disponible en el tracker")
             return
 
+        file_size = None
+        for peer_info in self.peers[filename]:
+            peer_host, peer_port, is_complete, progress = peer_info
+            if peer_host == self.host and peer_port == self.port:
+                continue
+            try:
+                client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                client.connect((peer_host, peer_port))
+                client.send(f"SIZE {filename}".encode())
+                response = client.recv(1024).decode()
+                if response.startswith("SIZE "):
+                    file_size = int(response.split()[1])
+                    client.close()
+                    break
+            except Exception as e:
+                print(f"Falló la obtención del tamaño del archivo desde {peer_host}:{peer_port}, error: {e}")
+                continue
+
+        if file_size is None:
+            print(f"No se pudo obtener el tamaño del archivo {filename}")
+            return
+
         for peer_info in self.peers[filename]:
             peer_host, peer_port, is_complete, progress = peer_info
             if peer_host == self.host and peer_port == self.port:
@@ -179,8 +216,9 @@ class Peer:
                 client.send(filename.encode())
                 response = client.recv(1024)
                 if response == b'ACK':
-                    with open(filename, 'wb') as f:  # Ajustado para mantener el nombre original
-                        total_downloaded = 0
+                    mode = 'ab' if os.path.exists(filename) else 'wb'
+                    with open(filename, mode) as f:
+                        total_downloaded = self.files[filename][1]
                         while True:
                             data = client.recv(1024)
                             if not data:
@@ -188,17 +226,9 @@ class Peer:
                             f.write(data)
                             total_downloaded += len(data)
                             self.files[filename][1] = total_downloaded
-                            # Asegurarse de que el tamaño del archivo no sea cero
-                            try:
-                                file_size = os.path.getsize(filename)
-                                if file_size > 0:
-                                    percentage = (total_downloaded / file_size) * 100
-                                    self.update_progress_with_tracker(filename, int(percentage))
-                                    print(f"Descargando {filename}: {percentage:.2f}%")
-                                else:
-                                    print("El tamaño del archivo es cero, no se puede calcular el progreso")
-                            except OSError as e:
-                                print(f"Error al obtener el tamaño del archivo: {e}")
+                            percentage = (total_downloaded / file_size) * 100
+                            self.update_progress_with_tracker(filename, int(percentage))
+                            print(f"Descargando {filename}: {percentage:.2f}%")
                     self.files[filename] = [True, 100]
                     print(f"\nPeer {self.id} completó la descarga de {filename}")
                     client.close()
@@ -206,8 +236,6 @@ class Peer:
             except Exception as e:
                 print(f"Falló la descarga desde {peer_host}:{peer_port}, error: {e}")
                 continue
-
-
 
     def cancel_action(self, filename):
         if filename in self.files:
